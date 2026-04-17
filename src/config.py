@@ -40,6 +40,10 @@ class Options:
     sell_low_pct: int
     buy_low_pct: int
     buy_mid_pct: int
+    # Hard guardrails
+    min_sell_soc_pct: float
+    max_buy_soc_pct: float
+    sell_price_floor: float       # $/kWh
     # Timezone
     tz: str
 
@@ -64,6 +68,9 @@ class Options:
             sell_low_pct=_env("SELL_LOW_PCT", 70, int),
             buy_low_pct=_env("BUY_LOW_PCT", 10, int),
             buy_mid_pct=_env("BUY_MID_PCT", 30, int),
+            min_sell_soc_pct=_env("MIN_SELL_SOC_PCT", 20.0, float),
+            max_buy_soc_pct=_env("MAX_BUY_SOC_PCT", 80.0, float),
+            sell_price_floor=_env("SELL_PRICE_FLOOR", 0.15, float),
             tz=_env("TZ", "Australia/Sydney"),
         )
 

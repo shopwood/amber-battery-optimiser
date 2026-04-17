@@ -55,6 +55,10 @@ class OptimiserInputs:
     sell_low_pct: int
     buy_low_pct: int
     buy_mid_pct: int
+    # Hard guardrails — applied *after* the percentile maths.
+    min_sell_soc_pct: float       # never sell below this SoC
+    max_buy_soc_pct: float        # never buy above this SoC
+    sell_price_floor: float       # $/kWh — never sell below this feed-in price
 
 
 def compute(inp: OptimiserInputs) -> dict[str, float]:
@@ -70,30 +74,37 @@ def compute(inp: OptimiserInputs) -> dict[str, float]:
     if buy_mid  <= buy_low:
         buy_mid  = buy_low + 0.01
 
+    # Price floor: never sell below this, regardless of forecast shape.
+    sell_high = max(sell_high, inp.sell_price_floor)
+    sell_low  = max(sell_low,  inp.sell_price_floor)
+    # After flooring they may collide — nudge high back above low.
+    if sell_high <= sell_low:
+        sell_high = sell_low + 0.01
+
     # --- SoC reserves (scale with PV surplus) -------------------------------
     surplus = inp.pv_remaining_kwh - inp.load_remaining_kwh
     surplus_ratio = surplus / max(inp.battery_capacity_kwh, 0.1)
     # ratio in ~[-2, +2] typically. Map to a drain-aggressiveness in [0, 1].
     aggression = _clamp((surplus_ratio + 1.0) / 3.0, 0.0, 1.0)
 
-    # High-price sell allowed to drain close to the floor.
+    # High-price sell allowed to drain close to the floor (but never below min_sell_soc_pct).
     sell_battery_minimum     = _clamp(
         inp.soc_floor_pct + (1 - aggression) * 15.0,
-        inp.soc_floor_pct, inp.soc_ceiling_pct
+        max(inp.soc_floor_pct, inp.min_sell_soc_pct), inp.soc_ceiling_pct
     )
     # Mid-price sell keeps more reserve for the evening peak.
     sell_low_battery_minimum = _clamp(
         sell_battery_minimum + 15.0 + (1 - aggression) * 10.0,
-        inp.soc_floor_pct, inp.soc_ceiling_pct
+        max(inp.soc_floor_pct, inp.min_sell_soc_pct), inp.soc_ceiling_pct
     )
 
     # Emergency charge band: buy aggressively only when battery is low.
     buy_battery_low_threshold  = _clamp(inp.soc_floor_pct + 10.0, 5.0, 40.0)
     # Opportunistic charge band top — lower target if big PV expected (don't
-    # waste grid money charging what solar will cover).
+    # waste grid money charging what solar will cover). Capped at max_buy_soc_pct.
     buy_battery_high_threshold = _clamp(
         85.0 - aggression * 25.0,
-        buy_battery_low_threshold + 10.0, 95.0
+        buy_battery_low_threshold + 10.0, inp.max_buy_soc_pct
     )
 
     return {

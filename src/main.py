@@ -80,6 +80,9 @@ async def run_once(opts: Options) -> None:
             sell_low_pct=opts.sell_low_pct,
             buy_low_pct=opts.buy_low_pct,
             buy_mid_pct=opts.buy_mid_pct,
+            min_sell_soc_pct=opts.min_sell_soc_pct,
+            max_buy_soc_pct=opts.max_buy_soc_pct,
+            sell_price_floor=opts.sell_price_floor,
         ))
 
         log.info("computed: %s", values)
