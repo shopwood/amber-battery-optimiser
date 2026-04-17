@@ -110,16 +110,25 @@ async def main() -> None:
     except Exception:
         log.exception("initial run failed")
 
-    hour, minute = (int(x) for x in opts.run_at.split(":"))
+    # RUN_AT accepts one or more HH:MM times, comma-separated. E.g. "05:00" or "05:00,17:00".
+    times: list[tuple[int, int]] = []
+    for item in opts.run_at.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        h, m = (int(x) for x in item.split(":"))
+        times.append((h, m))
+
     sched = AsyncIOScheduler(timezone=ZoneInfo(opts.tz))
-    sched.add_job(
-        lambda: asyncio.create_task(run_once(opts)),
-        CronTrigger(hour=hour, minute=minute),
-        name="daily_optimise",
-        misfire_grace_time=300,
-    )
+    for h, m in times:
+        sched.add_job(
+            lambda: asyncio.create_task(run_once(opts)),
+            CronTrigger(hour=h, minute=m),
+            name=f"optimise_{h:02d}{m:02d}",
+            misfire_grace_time=300,
+        )
+        log.info("scheduled optimise at %02d:%02d %s", h, m, opts.tz)
     sched.start()
-    log.info("scheduled daily_optimise at %02d:%02d %s", hour, minute, opts.tz)
 
     # Park forever.
     await asyncio.Event().wait()
