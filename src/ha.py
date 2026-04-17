@@ -1,23 +1,24 @@
 """
-Home Assistant Supervisor API client.
+Home Assistant REST API client.
 
-Inside an add-on, Home Assistant is reachable at http://supervisor/core/api
-and auth is a short-lived token injected as $SUPERVISOR_TOKEN.
+Used when running as a sidecar docker container next to HA Container.
+Base URL points at HA itself (e.g. http://homeassistant:8123), authed with a
+long-lived access token (HA → profile → Security → Long-lived access tokens).
 """
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
 
 class HomeAssistant:
-    def __init__(self, client: httpx.AsyncClient | None = None):
-        token = os.environ["SUPERVISOR_TOKEN"]
+    def __init__(self, url: str, token: str, client: httpx.AsyncClient | None = None):
+        if not token:
+            raise RuntimeError("HA_TOKEN is empty — create a long-lived access token in HA and set it in .env")
         self._owns = client is None
         self._c = client or httpx.AsyncClient(
-            base_url="http://supervisor/core/api/",
+            base_url=url.rstrip("/") + "/api/",
             headers={
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",

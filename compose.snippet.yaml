@@ -1,0 +1,17 @@
+# Paste under `services:` in your existing ~/home-assistant/compose.yaml
+# (sitting next to the homeassistant service itself).
+#
+# Build context assumes the repo is cloned at ~/home-assistant/amber-battery-optimiser.
+# If you put it elsewhere, adjust `build:` accordingly.
+
+  amber_battery_optimiser:
+    build: ./amber-battery-optimiser
+    container_name: amber_battery_optimiser
+    restart: unless-stopped
+    env_file:
+      - ./amber-battery-optimiser/.env
+    depends_on:
+      - homeassistant          # rename if your HA service is different
+    # Shares the HA network so HA_URL=http://homeassistant:8123 resolves.
+    # If your HA container is on a custom network, set it here too.
+    # networks: [default]

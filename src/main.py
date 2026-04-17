@@ -47,7 +47,7 @@ async def _solcast_remaining_kwh(ha: HomeAssistant, entity: str) -> float:
 
 
 async def run_once(opts: Options) -> None:
-    async with HomeAssistant() as ha, Amber(opts.amber_token) as amber:
+    async with HomeAssistant(opts.ha_url, opts.ha_token) as ha, Amber(opts.amber_token) as amber:
         soc = await ha.get_state_float(opts.soc_entity)
         pv_remaining = await _solcast_remaining_kwh(ha, opts.solcast_forecast_entity)
 
@@ -55,9 +55,9 @@ async def run_once(opts: Options) -> None:
         general = [i.per_kwh for i in intervals if i.channel == "general"]
         feed_in = [i.per_kwh for i in intervals if i.channel == "feedIn"]
 
-        # Naive load estimate: half of daily_load for a mid-day run. Refine when
+        # Naive load estimate: scales with fraction of day remaining. Refine when
         # you wire up your HA energy dashboard.
-        now = datetime.now(ZoneInfo("Australia/Sydney"))
+        now = datetime.now(ZoneInfo(opts.tz))
         fraction_of_day_remaining = max(0.0, (24 - (now.hour + now.minute / 60)) / 24)
         load_remaining = opts.daily_load_kwh * fraction_of_day_remaining
 
@@ -105,7 +105,7 @@ async def main() -> None:
         log.exception("initial run failed")
 
     hour, minute = (int(x) for x in opts.run_at.split(":"))
-    sched = AsyncIOScheduler(timezone=ZoneInfo("Australia/Sydney"))
+    sched = AsyncIOScheduler(timezone=ZoneInfo(opts.tz))
     sched.add_job(
         lambda: asyncio.create_task(run_once(opts)),
         CronTrigger(hour=hour, minute=minute),
@@ -113,7 +113,7 @@ async def main() -> None:
         misfire_grace_time=300,
     )
     sched.start()
-    log.info("scheduled daily_optimise at %02d:%02d Australia/Sydney", hour, minute)
+    log.info("scheduled daily_optimise at %02d:%02d %s", hour, minute, opts.tz)
 
     # Park forever.
     await asyncio.Event().wait()
