@@ -90,8 +90,14 @@ async def run_once(opts: Options) -> None:
 
         for key, value in values.items():
             entity = HELPERS[key]
-            await ha.set_input_number(entity, value)
-            log.info("wrote %s = %s", entity, value)
+            try:
+                written = await ha.set_input_number(entity, value)
+                if written != round(float(value), 3):
+                    log.warning("wrote %s = %s (clamped from %s)", entity, written, value)
+                else:
+                    log.info("wrote %s = %s", entity, written)
+            except Exception as e:
+                log.warning("failed to write %s = %s: %s", entity, value, e)
 
 
 async def main() -> None:

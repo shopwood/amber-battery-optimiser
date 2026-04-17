@@ -46,9 +46,25 @@ class HomeAssistant:
         s = await self.get_state(entity_id)
         return s.get("attributes", {}).get(attr)
 
-    async def set_input_number(self, entity_id: str, value: float) -> None:
+    async def set_input_number(self, entity_id: str, value: float) -> float:
+        """
+        Write value to an input_number, clamped to the helper's own min/max and
+        step. Returns the value actually written.
+        """
+        attrs = (await self.get_state(entity_id)).get("attributes", {})
+        lo = float(attrs.get("min", value))
+        hi = float(attrs.get("max", value))
+        step = float(attrs.get("step", 0.001))
+
+        clamped = max(lo, min(hi, float(value)))
+        # Round to the helper's step so HA doesn't reject precision mismatches.
+        if step > 0:
+            clamped = round(clamped / step) * step
+        clamped = round(clamped, 3)
+
         r = await self._c.post(
             "services/input_number/set_value",
-            json={"entity_id": entity_id, "value": round(float(value), 3)},
+            json={"entity_id": entity_id, "value": clamped},
         )
         r.raise_for_status()
+        return clamped
