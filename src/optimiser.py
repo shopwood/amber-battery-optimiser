@@ -2,7 +2,7 @@
 Threshold optimiser.
 
 Inputs:
-    - rest-of-day forecast prices (general + feed-in), c/kWh
+    - rest-of-day forecast prices (general + feed-in), $/kWh
     - current battery SoC, %
     - battery capacity, kWh
     - expected PV remaining today, kWh  (from Solcast)
@@ -43,8 +43,8 @@ def _clamp(x: float, lo: float, hi: float) -> float:
 
 @dataclass(frozen=True)
 class OptimiserInputs:
-    general_prices: list[float]   # c/kWh, rest of day
-    feed_in_prices: list[float]   # c/kWh, rest of day
+    general_prices: list[float]   # $/kWh, rest of day
+    feed_in_prices: list[float]   # $/kWh, rest of day
     current_soc_pct: float
     battery_capacity_kwh: float
     soc_floor_pct: float
@@ -64,11 +64,11 @@ def compute(inp: OptimiserInputs) -> dict[str, float]:
     buy_low   = _percentile(inp.general_prices, inp.buy_low_pct)
     buy_mid   = _percentile(inp.general_prices, inp.buy_mid_pct)
 
-    # Guarantee ordering even if the distribution is flat.
+    # Guarantee ordering even if the distribution is flat (offsets in $/kWh — 0.01 = 1 c/kWh).
     if sell_low >= sell_high:
-        sell_low = sell_high - 1.0
+        sell_low = sell_high - 0.01
     if buy_mid  <= buy_low:
-        buy_mid  = buy_low + 1.0
+        buy_mid  = buy_low + 0.01
 
     # --- SoC reserves (scale with PV surplus) -------------------------------
     surplus = inp.pv_remaining_kwh - inp.load_remaining_kwh
@@ -97,12 +97,14 @@ def compute(inp: OptimiserInputs) -> dict[str, float]:
     )
 
     return {
-        "sell_price_threshold":       round(sell_high, 3),
-        "sell_price_low_threshold":   round(sell_low, 3),
+        # Prices are $/kWh → 5 decimal places preserves sub-cent precision
+        "sell_price_threshold":       round(sell_high, 5),
+        "sell_price_low_threshold":   round(sell_low, 5),
+        "buy_price_low_battery":      round(buy_low, 5),
+        "buy_price_mid_battery":      round(buy_mid, 5),
+        # SoC values are percentages
         "sell_battery_minimum":       round(sell_battery_minimum, 1),
         "sell_low_battery_minimum":   round(sell_low_battery_minimum, 1),
-        "buy_price_low_battery":      round(buy_low, 3),
-        "buy_price_mid_battery":      round(buy_mid, 3),
         "buy_battery_low_threshold":  round(buy_battery_low_threshold, 1),
         "buy_battery_high_threshold": round(buy_battery_high_threshold, 1),
     }

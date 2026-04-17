@@ -10,7 +10,11 @@ import httpx
 class Interval:
     channel: str            # 'general' | 'feedIn' | 'controlledLoad'
     nem_time: str
-    per_kwh: float          # c/kWh, all-in (predicted for forecasts)
+    per_kwh: float          # $/kWh, all-in (predicted for forecasts).
+                            # Amber API returns c/kWh; we divide by 100 so the
+                            # rest of the app works in dollars — matches the
+                            # HACS Amber sensor's `per_kwh` attribute and the
+                            # input_number helpers.
     descriptor: str
     estimate: bool
 
@@ -46,7 +50,7 @@ class Amber:
             out.append(Interval(
                 channel=x["channelType"],
                 nem_time=x["nemTime"],
-                per_kwh=float(per),
+                per_kwh=float(per) / 100.0,   # c/kWh → $/kWh
                 descriptor=x["descriptor"],
                 estimate=bool(x.get("estimate", False)),
             ))
