@@ -29,6 +29,7 @@ class Options:
     general_price_entity: str
     feed_in_price_entity: str
     solcast_forecast_entity: str
+    solcast_forecast_tomorrow_entity: str
     # Physical battery
     battery_capacity_kwh: float
     battery_soc_floor_pct: float
@@ -60,6 +61,7 @@ class Options:
             general_price_entity=_env("GENERAL_PRICE_ENTITY", "sensor.01k1z85jvtmqnfb3h5cs6yd95y_general_price"),
             feed_in_price_entity=_env("FEED_IN_PRICE_ENTITY", "sensor.01k1z85jvtmqnfb3h5cs6yd95y_feed_in_price"),
             solcast_forecast_entity=_env("SOLCAST_FORECAST_ENTITY", "sensor.solcast_pv_forecast_forecast_today"),
+            solcast_forecast_tomorrow_entity=_env("SOLCAST_FORECAST_TOMORROW_ENTITY", "sensor.solcast_pv_forecast_forecast_tomorrow"),
             battery_capacity_kwh=_env("BATTERY_CAPACITY_KWH", 10.0, float),
             battery_soc_floor_pct=_env("BATTERY_SOC_FLOOR_PCT", 10.0, float),
             battery_soc_ceiling_pct=_env("BATTERY_SOC_CEILING_PCT", 100.0, float),

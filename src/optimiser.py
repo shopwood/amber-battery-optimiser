@@ -59,6 +59,10 @@ class OptimiserInputs:
     min_sell_soc_pct: float       # never sell below this SoC
     max_buy_soc_pct: float        # never buy above this SoC
     sell_price_floor: float       # $/kWh — never sell below this feed-in price
+    # Option A — tomorrow's forecast, blended by today_weight (1.0 at dawn → 0.0 at dusk).
+    pv_tomorrow_kwh: float
+    load_tomorrow_kwh: float
+    today_weight: float           # 0..1
 
 
 def compute(inp: OptimiserInputs) -> dict[str, float]:
@@ -81,8 +85,14 @@ def compute(inp: OptimiserInputs) -> dict[str, float]:
     if sell_high <= sell_low:
         sell_high = sell_low + 0.01
 
-    # --- SoC reserves (scale with PV surplus) -------------------------------
-    surplus = inp.pv_remaining_kwh - inp.load_remaining_kwh
+    # --- SoC reserves (scale with PV surplus over the relevant horizon) -----
+    # Blend today vs tomorrow based on how much daylight is still ahead today.
+    # At dawn today_weight=1 (decisions driven by today); after dusk today_weight→0
+    # (decisions driven by tomorrow, since nothing's coming from today anymore).
+    tw = _clamp(inp.today_weight, 0.0, 1.0)
+    effective_pv   = tw * inp.pv_remaining_kwh   + (1 - tw) * inp.pv_tomorrow_kwh
+    effective_load = tw * inp.load_remaining_kwh + (1 - tw) * inp.load_tomorrow_kwh
+    surplus = effective_pv - effective_load
     surplus_ratio = surplus / max(inp.battery_capacity_kwh, 0.1)
     # ratio in ~[-2, +2] typically. Map to a drain-aggressiveness in [0, 1].
     aggression = _clamp((surplus_ratio + 1.0) / 3.0, 0.0, 1.0)
@@ -100,10 +110,22 @@ def compute(inp: OptimiserInputs) -> dict[str, float]:
 
     # Emergency charge band: buy aggressively only when battery is low.
     buy_battery_low_threshold  = _clamp(inp.soc_floor_pct + 10.0, 5.0, 40.0)
-    # Opportunistic charge band top — lower target if big PV expected (don't
-    # waste grid money charging what solar will cover). Capped at max_buy_soc_pct.
+
+    # Opportunistic charge band top — direct model: "grid should top us up
+    # only to the point where today's solar can take the rest." Anything above
+    # that is paying for kWh the sun would have delivered free.
+    #
+    # expected_pv_fill_pct: %-points that today's solar (minus today's load)
+    # is expected to add to the battery. Negative on dull days.
+    #
+    # Using TODAY's PV only here (not the blended value) — tomorrow's sun can't
+    # fill today's battery.
+    expected_pv_fill_pct = (
+        (inp.pv_remaining_kwh - inp.load_remaining_kwh) /
+        max(inp.battery_capacity_kwh, 0.1)
+    ) * 100.0
     buy_battery_high_threshold = _clamp(
-        85.0 - aggression * 25.0,
+        100.0 - expected_pv_fill_pct,
         buy_battery_low_threshold + 10.0, inp.max_buy_soc_pct
     )
 

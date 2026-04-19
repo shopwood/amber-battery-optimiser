@@ -28,8 +28,8 @@ log = logging.getLogger("optimiser")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 
-async def _solcast_remaining_kwh(ha: HomeAssistant, entity: str) -> float:
-    """Sum Solcast remaining detailedForecast entries after now."""
+async def _solcast_kwh(ha: HomeAssistant, entity: str, *, only_future: bool) -> float:
+    """Sum Solcast detailedForecast entries — either all, or only those after now."""
     now = datetime.now(ZoneInfo("UTC"))
     detailed = await ha.get_attr(entity, "detailedForecast") or []
     total = 0.0
@@ -38,9 +38,10 @@ async def _solcast_remaining_kwh(ha: HomeAssistant, entity: str) -> float:
         start = row.get("period_start")
         if not start:
             continue
-        t = datetime.fromisoformat(start.replace("Z", "+00:00"))
-        if t < now:
-            continue
+        if only_future:
+            t = datetime.fromisoformat(start.replace("Z", "+00:00"))
+            if t < now:
+                continue
         # Entries are 30-minute periods; pv_estimate is power (kW) → 0.5 h to get kWh.
         total += float(row.get("pv_estimate", 0.0)) * 0.5
     return total
@@ -49,7 +50,8 @@ async def _solcast_remaining_kwh(ha: HomeAssistant, entity: str) -> float:
 async def run_once(opts: Options) -> None:
     async with HomeAssistant(opts.ha_url, opts.ha_token) as ha, Amber(opts.amber_token) as amber:
         soc = await ha.get_state_float(opts.soc_entity)
-        pv_remaining = await _solcast_remaining_kwh(ha, opts.solcast_forecast_entity)
+        pv_remaining = await _solcast_kwh(ha, opts.solcast_forecast_entity, only_future=True)
+        pv_tomorrow  = await _solcast_kwh(ha, opts.solcast_forecast_tomorrow_entity, only_future=False)
 
         intervals = await amber.rest_of_day(opts.amber_site_id, next_intervals=48)
         general = [i.per_kwh for i in intervals if i.channel == "general"]
@@ -61,10 +63,18 @@ async def run_once(opts: Options) -> None:
         fraction_of_day_remaining = max(0.0, (24 - (now.hour + now.minute / 60)) / 24)
         load_remaining = opts.daily_load_kwh * fraction_of_day_remaining
 
+        # Option A — time-weighted blend of today vs tomorrow PV.
+        # Daylight window treated as ~06:00–18:00 (12h). Weight is 1.0 at dawn,
+        # trails to 0.0 at dusk, so overnight decisions lean on tomorrow's forecast.
+        mins_daylight_left = max(0, min(18 * 60 - (now.hour * 60 + now.minute), 12 * 60))
+        today_weight = mins_daylight_left / (12 * 60)
+
         log.info(
-            "inputs: soc=%.1f%%  pv_remaining=%.2fkWh  load_remaining=%.2fkWh  "
+            "inputs: soc=%.1f%%  pv_remaining=%.2fkWh  pv_tomorrow=%.2fkWh  "
+            "load_remaining=%.2fkWh  today_weight=%.2f  "
             "general_intervals=%d  feed_in_intervals=%d",
-            soc, pv_remaining, load_remaining, len(general), len(feed_in),
+            soc, pv_remaining, pv_tomorrow, load_remaining, today_weight,
+            len(general), len(feed_in),
         )
 
         values = compute(OptimiserInputs(
@@ -83,6 +93,9 @@ async def run_once(opts: Options) -> None:
             min_sell_soc_pct=opts.min_sell_soc_pct,
             max_buy_soc_pct=opts.max_buy_soc_pct,
             sell_price_floor=opts.sell_price_floor,
+            pv_tomorrow_kwh=pv_tomorrow,
+            load_tomorrow_kwh=opts.daily_load_kwh,
+            today_weight=today_weight,
         ))
 
         log.info("computed: %s", values)
