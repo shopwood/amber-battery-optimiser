@@ -1,5 +1,5 @@
 """
-Entrypoint. Runs once at startup, then daily at options.run_at local time.
+Entrypoint. Runs once at startup, then hourly from run_hourly_from to run_hourly_to local time.
 
 Pipeline:
     1. Load options.
@@ -57,23 +57,27 @@ async def run_once(opts: Options) -> None:
         general = [i.per_kwh for i in intervals if i.channel == "general"]
         feed_in = [i.per_kwh for i in intervals if i.channel == "feedIn"]
 
-        # Naive load estimate: scales with fraction of day remaining. Refine when
-        # you wire up your HA energy dashboard.
+        # Naive load estimate: scales with fraction of day remaining.
         now = datetime.now(ZoneInfo(opts.tz))
         fraction_of_day_remaining = max(0.0, (24 - (now.hour + now.minute / 60)) / 24)
         load_remaining = opts.daily_load_kwh * fraction_of_day_remaining
 
-        # Option A — time-weighted blend of today vs tomorrow PV.
+        # Time-weighted blend of today vs tomorrow PV.
         # Daylight window treated as ~06:00–18:00 (12h). Weight is 1.0 at dawn,
         # trails to 0.0 at dusk, so overnight decisions lean on tomorrow's forecast.
         mins_daylight_left = max(0, min(18 * 60 - (now.hour * 60 + now.minute), 12 * 60))
         today_weight = mins_daylight_left / (12 * 60)
 
+        # buy_max_price: convert from c/kWh (config) to $/kWh (optimiser's unit).
+        buy_max_price = opts.buy_max_price_cents / 100.0
+
         log.info(
             "inputs: soc=%.1f%%  pv_remaining=%.2fkWh  pv_tomorrow=%.2fkWh  "
             "load_remaining=%.2fkWh  today_weight=%.2f  "
+            "buy_target_soc=%.0f%%  buy_max_price=%.0fc  "
             "general_intervals=%d  feed_in_intervals=%d",
             soc, pv_remaining, pv_tomorrow, load_remaining, today_weight,
+            opts.buy_target_soc_pct, opts.buy_max_price_cents,
             len(general), len(feed_in),
         )
 
@@ -82,6 +86,7 @@ async def run_once(opts: Options) -> None:
             feed_in_prices=feed_in,
             current_soc_pct=soc,
             battery_capacity_kwh=opts.battery_capacity_kwh,
+            battery_charge_rate_kw=opts.battery_charge_rate_kw,
             soc_floor_pct=opts.battery_soc_floor_pct,
             soc_ceiling_pct=opts.battery_soc_ceiling_pct,
             pv_remaining_kwh=pv_remaining,
@@ -89,7 +94,8 @@ async def run_once(opts: Options) -> None:
             sell_high_pct=opts.sell_high_pct,
             sell_low_pct=opts.sell_low_pct,
             buy_low_pct=opts.buy_low_pct,
-            buy_mid_pct=opts.buy_mid_pct,
+            buy_target_soc_pct=opts.buy_target_soc_pct,
+            buy_max_price=buy_max_price,
             min_sell_soc_pct=opts.min_sell_soc_pct,
             max_buy_soc_pct=opts.max_buy_soc_pct,
             sell_price_floor=opts.sell_price_floor,
@@ -118,7 +124,10 @@ async def run_once(opts: Options) -> None:
 
 async def main() -> None:
     opts = Options.load()
-    log.info("starting; run_at=%s dry_run=%s site=%s", opts.run_at, opts.dry_run, opts.amber_site_id)
+    log.info(
+        "starting; schedule=hourly %02d:00–%02d:00 %s  dry_run=%s  site=%s",
+        opts.run_hourly_from, opts.run_hourly_to, opts.tz, opts.dry_run, opts.amber_site_id,
+    )
 
     # Run once on boot so the helpers aren't stale after a restart.
     try:
@@ -126,24 +135,18 @@ async def main() -> None:
     except Exception:
         log.exception("initial run failed")
 
-    # RUN_AT accepts one or more HH:MM times, comma-separated. E.g. "05:00" or "05:00,17:00".
-    times: list[tuple[int, int]] = []
-    for item in opts.run_at.split(","):
-        item = item.strip()
-        if not item:
-            continue
-        h, m = (int(x) for x in item.split(":"))
-        times.append((h, m))
-
     sched = AsyncIOScheduler(timezone=ZoneInfo(opts.tz))
-    for h, m in times:
+    for hour in range(opts.run_hourly_from, opts.run_hourly_to + 1):
         sched.add_job(
             lambda: asyncio.create_task(run_once(opts)),
-            CronTrigger(hour=h, minute=m),
-            name=f"optimise_{h:02d}{m:02d}",
+            CronTrigger(hour=hour, minute=0),
+            name=f"optimise_{hour:02d}00",
             misfire_grace_time=300,
         )
-        log.info("scheduled optimise at %02d:%02d %s", h, m, opts.tz)
+    log.info(
+        "scheduled hourly optimise at :00 from %02d:00 to %02d:00 %s",
+        opts.run_hourly_from, opts.run_hourly_to, opts.tz,
+    )
     sched.start()
 
     # Park forever.

@@ -22,7 +22,6 @@ class Options:
     amber_token: str
     amber_site_id: str
     # Schedule
-    run_at: str
     dry_run: bool
     # Entities
     soc_entity: str
@@ -34,17 +33,24 @@ class Options:
     battery_capacity_kwh: float
     battery_soc_floor_pct: float
     battery_soc_ceiling_pct: float
+    battery_charge_rate_kw: float   # max charge rate used for buy-quantity estimates
     # Load estimate
     daily_load_kwh: float
-    # Percentile bands
+    # Sell percentile bands
     sell_high_pct: int
     sell_low_pct: int
+    # Emergency buy percentile (when battery is critically low)
     buy_low_pct: int
-    buy_mid_pct: int
+    # Mid buy: price-scan strategy targeting buy_target_soc_pct
+    buy_target_soc_pct: float       # aim to reach this SoC via grid charging (e.g. 85%)
+    buy_max_price_cents: float      # never pay more than this (c/kWh) for mid-band buying
     # Hard guardrails
     min_sell_soc_pct: float
     max_buy_soc_pct: float
-    sell_price_floor: float       # $/kWh
+    sell_price_floor: float         # $/kWh
+    # Schedule — run hourly from run_hourly_from to run_hourly_to (inclusive, local time)
+    run_hourly_from: int
+    run_hourly_to: int
     # Timezone
     tz: str
 
@@ -55,7 +61,6 @@ class Options:
             ha_token=_env("HA_TOKEN", ""),
             amber_token=_env("AMBER_TOKEN", ""),
             amber_site_id=_env("AMBER_SITE_ID", ""),
-            run_at=_env("RUN_AT", "05:00"),
             dry_run=_env("DRY_RUN", False, lambda s: str(s).lower() in ("1", "true", "yes")),
             soc_entity=_env("SOC_ENTITY", "sensor.esy_sunhome_1926470123495710721_battery_state_of_charge"),
             general_price_entity=_env("GENERAL_PRICE_ENTITY", "sensor.01k1z85jvtmqnfb3h5cs6yd95y_general_price"),
@@ -65,14 +70,18 @@ class Options:
             battery_capacity_kwh=_env("BATTERY_CAPACITY_KWH", 10.0, float),
             battery_soc_floor_pct=_env("BATTERY_SOC_FLOOR_PCT", 10.0, float),
             battery_soc_ceiling_pct=_env("BATTERY_SOC_CEILING_PCT", 100.0, float),
+            battery_charge_rate_kw=_env("BATTERY_CHARGE_RATE_KW", 5.0, float),
             daily_load_kwh=_env("DAILY_LOAD_KWH", 20.0, float),
             sell_high_pct=_env("SELL_HIGH_PCT", 90, int),
             sell_low_pct=_env("SELL_LOW_PCT", 70, int),
             buy_low_pct=_env("BUY_LOW_PCT", 10, int),
-            buy_mid_pct=_env("BUY_MID_PCT", 30, int),
+            buy_target_soc_pct=_env("BUY_TARGET_SOC_PCT", 85.0, float),
+            buy_max_price_cents=_env("BUY_MAX_PRICE_CENTS", 12.0, float),
             min_sell_soc_pct=_env("MIN_SELL_SOC_PCT", 20.0, float),
-            max_buy_soc_pct=_env("MAX_BUY_SOC_PCT", 80.0, float),
+            max_buy_soc_pct=_env("MAX_BUY_SOC_PCT", 90.0, float),
             sell_price_floor=_env("SELL_PRICE_FLOOR", 0.15, float),
+            run_hourly_from=_env("RUN_HOURLY_FROM", 7, int),
+            run_hourly_to=_env("RUN_HOURLY_TO", 14, int),
             tz=_env("TZ", "Australia/Sydney"),
         )
 
