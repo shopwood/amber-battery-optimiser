@@ -66,7 +66,10 @@ def _scan_buy_mid_price(
     needed_kwh  = max(0.0, target_kwh - current_kwh - solar_net)
 
     if needed_kwh <= 0.0:
-        return 0.0  # solar alone covers the target — no mid-band buying needed
+        # Use a large negative sentinel so the HA controller's price comparison
+        # (current_price <= threshold) is never satisfied — safer than 0.0 which
+        # some automations might treat as "unconstrained".
+        return -9.99
 
     energy_per_interval = battery_charge_rate_kw * 0.5  # kWh per 30-min slot
 
@@ -83,7 +86,7 @@ def _scan_buy_mid_price(
     if candidates:
         return buy_max_price
 
-    return 0.0  # no prices available below the ceiling
+    return -9.99  # no forecast prices below the ceiling — don't buy mid-band
 
 
 @dataclass(frozen=True)
