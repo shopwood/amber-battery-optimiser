@@ -11,16 +11,23 @@ Inputs:
 Output:
     Dict of the 8 input_number values to write back to HA.
 
-Strategy (first pass — percentile-based with reserve scaled by surplus):
-    sell_price_threshold      = P(sell_high_pct) of feed-in prices
-    sell_price_low_threshold  = P(sell_low_pct)  of feed-in prices
-    buy_price_low_battery     = P(buy_low_pct)   of general prices   (emergency charge only when very cheap)
-    buy_price_mid_battery     = P(buy_mid_pct)   of general prices
+Buy-mid strategy (price-scan):
+    Target: battery peaks at buy_target_soc_pct (default 85%).
+    1. Estimate kWh still needed from the grid:
+         needed = target_kwh - current_kwh - max(0, pv_remaining - load_remaining)
+    2. Scan unique general prices low → high (up to buy_max_price $/kWh).
+       At each candidate price P, the battery would charge during every interval
+       where price ≤ P:
+         potential = count(intervals ≤ P) × charge_rate_kw × 0.5h
+    3. First P where potential ≥ needed becomes buy_price_mid_battery.
+       If needed ≤ 0, no mid-band buying is required (price set to 0).
 
-    Reserves flex with PV surplus:
-      surplus_ratio = (pv_remaining - load_remaining) / battery_capacity_kwh
-      - big +ve surplus  → drain aggressively, low reserves
-      - near zero / -ve  → protect evening reserves
+Sell strategy (unchanged — percentile-based):
+    sell_price_threshold     = P(sell_high_pct) of feed-in prices
+    sell_price_low_threshold = P(sell_low_pct)  of feed-in prices
+
+Emergency buy (unchanged — percentile-based):
+    buy_price_low_battery    = P(buy_low_pct) of general prices
 """
 from __future__ import annotations
 
@@ -41,12 +48,54 @@ def _clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
 
+def _scan_buy_mid_price(
+    general_prices: list[float],
+    current_soc_pct: float,
+    pv_remaining_kwh: float,
+    load_remaining_kwh: float,
+    battery_capacity_kwh: float,
+    battery_charge_rate_kw: float,
+    buy_target_soc_pct: float,
+    buy_max_price: float,           # $/kWh ceiling
+) -> float:
+    """Return the lowest buy price that, if set as the mid-band limit, would
+    purchase enough grid energy to bring the battery to buy_target_soc_pct."""
+    target_kwh  = buy_target_soc_pct / 100.0 * battery_capacity_kwh
+    current_kwh = current_soc_pct   / 100.0 * battery_capacity_kwh
+    solar_net   = max(0.0, pv_remaining_kwh - load_remaining_kwh)
+    needed_kwh  = max(0.0, target_kwh - current_kwh - solar_net)
+
+    if needed_kwh <= 0.0:
+        # Use a large negative sentinel so the HA controller's price comparison
+        # (current_price <= threshold) is never satisfied — safer than 0.0 which
+        # some automations might treat as "unconstrained".
+        return -9.99
+
+    energy_per_interval = battery_charge_rate_kw * 0.5  # kWh per 30-min slot
+
+    # Unique candidate thresholds from the actual price list, capped at max.
+    candidates = sorted({p for p in general_prices if p <= buy_max_price})
+
+    for price in candidates:
+        count     = sum(1 for p in general_prices if p <= price)
+        potential = count * energy_per_interval
+        if potential >= needed_kwh:
+            return price
+
+    # Even buying at every sub-max interval isn't enough — accept buy_max_price.
+    if candidates:
+        return buy_max_price
+
+    return -9.99  # no forecast prices below the ceiling — don't buy mid-band
+
+
 @dataclass(frozen=True)
 class OptimiserInputs:
-    general_prices: list[float]   # $/kWh, rest of day
-    feed_in_prices: list[float]   # $/kWh, rest of day
+    general_prices: list[float]     # $/kWh, rest of day
+    feed_in_prices: list[float]     # $/kWh, rest of day
     current_soc_pct: float
     battery_capacity_kwh: float
+    battery_charge_rate_kw: float
     soc_floor_pct: float
     soc_ceiling_pct: float
     pv_remaining_kwh: float
@@ -54,88 +103,80 @@ class OptimiserInputs:
     sell_high_pct: int
     sell_low_pct: int
     buy_low_pct: int
-    buy_mid_pct: int
-    # Hard guardrails — applied *after* the percentile maths.
-    min_sell_soc_pct: float       # never sell below this SoC
-    max_buy_soc_pct: float        # never buy above this SoC
-    sell_price_floor: float       # $/kWh — never sell below this feed-in price
+    buy_target_soc_pct: float       # target SoC for mid-band grid charging
+    buy_max_price: float            # $/kWh ceiling for mid-band buying
+    # Hard guardrails — applied *after* the main maths.
+    min_sell_soc_pct: float         # never sell below this SoC
+    max_buy_soc_pct: float          # never buy above this SoC
+    sell_price_floor: float         # $/kWh — never sell below this feed-in price
     # Option A — tomorrow's forecast, blended by today_weight (1.0 at dawn → 0.0 at dusk).
     pv_tomorrow_kwh: float
     load_tomorrow_kwh: float
-    today_weight: float           # 0..1
+    today_weight: float             # 0..1
 
 
 def compute(inp: OptimiserInputs) -> dict[str, float]:
-    # --- price thresholds (percentiles of remaining forecast) ---------------
+    # --- sell price thresholds (percentiles of remaining feed-in forecast) ----
     sell_high = _percentile(inp.feed_in_prices, inp.sell_high_pct)
     sell_low  = _percentile(inp.feed_in_prices, inp.sell_low_pct)
-    buy_low   = _percentile(inp.general_prices, inp.buy_low_pct)
-    buy_mid   = _percentile(inp.general_prices, inp.buy_mid_pct)
 
-    # Guarantee ordering even if the distribution is flat (offsets in $/kWh — 0.01 = 1 c/kWh).
     if sell_low >= sell_high:
         sell_low = sell_high - 0.01
-    if buy_mid  <= buy_low:
-        buy_mid  = buy_low + 0.01
 
-    # Price floor: never sell below this, regardless of forecast shape.
     sell_high = max(sell_high, inp.sell_price_floor)
     sell_low  = max(sell_low,  inp.sell_price_floor)
-    # After flooring they may collide — nudge high back above low.
     if sell_high <= sell_low:
         sell_high = sell_low + 0.01
 
+    # --- emergency buy price (percentile-based, for critically-low battery) --
+    buy_low = _percentile(inp.general_prices, inp.buy_low_pct)
+
+    # --- mid buy price (price-scan: cheapest price that covers our deficit) --
+    buy_mid = _scan_buy_mid_price(
+        general_prices=inp.general_prices,
+        current_soc_pct=inp.current_soc_pct,
+        pv_remaining_kwh=inp.pv_remaining_kwh,
+        load_remaining_kwh=inp.load_remaining_kwh,
+        battery_capacity_kwh=inp.battery_capacity_kwh,
+        battery_charge_rate_kw=inp.battery_charge_rate_kw,
+        buy_target_soc_pct=inp.buy_target_soc_pct,
+        buy_max_price=inp.buy_max_price,
+    )
+
+    if buy_mid <= buy_low:
+        buy_mid = buy_low + 0.01
+
     # --- SoC reserves (scale with PV surplus over the relevant horizon) -----
-    # Blend today vs tomorrow based on how much daylight is still ahead today.
-    # At dawn today_weight=1 (decisions driven by today); after dusk today_weight→0
-    # (decisions driven by tomorrow, since nothing's coming from today anymore).
     tw = _clamp(inp.today_weight, 0.0, 1.0)
     effective_pv   = tw * inp.pv_remaining_kwh   + (1 - tw) * inp.pv_tomorrow_kwh
     effective_load = tw * inp.load_remaining_kwh + (1 - tw) * inp.load_tomorrow_kwh
-    surplus = effective_pv - effective_load
-    surplus_ratio = surplus / max(inp.battery_capacity_kwh, 0.1)
-    # ratio in ~[-2, +2] typically. Map to a drain-aggressiveness in [0, 1].
-    aggression = _clamp((surplus_ratio + 1.0) / 3.0, 0.0, 1.0)
+    surplus        = effective_pv - effective_load
+    surplus_ratio  = surplus / max(inp.battery_capacity_kwh, 0.1)
+    aggression     = _clamp((surplus_ratio + 1.0) / 3.0, 0.0, 1.0)
 
-    # High-price sell allowed to drain close to the floor (but never below min_sell_soc_pct).
-    sell_battery_minimum     = _clamp(
+    sell_battery_minimum = _clamp(
         inp.soc_floor_pct + (1 - aggression) * 15.0,
-        max(inp.soc_floor_pct, inp.min_sell_soc_pct), inp.soc_ceiling_pct
+        max(inp.soc_floor_pct, inp.min_sell_soc_pct), inp.soc_ceiling_pct,
     )
-    # Mid-price sell keeps more reserve for the evening peak.
     sell_low_battery_minimum = _clamp(
         sell_battery_minimum + 15.0 + (1 - aggression) * 10.0,
-        max(inp.soc_floor_pct, inp.min_sell_soc_pct), inp.soc_ceiling_pct
+        max(inp.soc_floor_pct, inp.min_sell_soc_pct), inp.soc_ceiling_pct,
     )
 
-    # Emergency charge band: buy aggressively only when battery is low.
-    buy_battery_low_threshold  = _clamp(inp.soc_floor_pct + 10.0, 5.0, 40.0)
+    # Emergency charge band — only when battery is very low.
+    buy_battery_low_threshold = _clamp(inp.soc_floor_pct + 10.0, 5.0, 40.0)
 
-    # Opportunistic charge band top — direct model: "grid should top us up
-    # only to the point where today's solar can take the rest." Anything above
-    # that is paying for kWh the sun would have delivered free.
-    #
-    # expected_pv_fill_pct: %-points that today's solar (minus today's load)
-    # is expected to add to the battery. Negative on dull days.
-    #
-    # Using TODAY's PV only here (not the blended value) — tomorrow's sun can't
-    # fill today's battery.
-    expected_pv_fill_pct = (
-        (inp.pv_remaining_kwh - inp.load_remaining_kwh) /
-        max(inp.battery_capacity_kwh, 0.1)
-    ) * 100.0
+    # Mid-band charge ceiling — the SoC we're targeting.
     buy_battery_high_threshold = _clamp(
-        100.0 - expected_pv_fill_pct,
-        buy_battery_low_threshold + 10.0, inp.max_buy_soc_pct
+        inp.buy_target_soc_pct,
+        buy_battery_low_threshold + 10.0, inp.max_buy_soc_pct,
     )
 
     return {
-        # Prices are $/kWh → 5 decimal places preserves sub-cent precision
         "sell_price_threshold":       round(sell_high, 5),
         "sell_price_low_threshold":   round(sell_low, 5),
         "buy_price_low_battery":      round(buy_low, 5),
         "buy_price_mid_battery":      round(buy_mid, 5),
-        # SoC values are percentages
         "sell_battery_minimum":       round(sell_battery_minimum, 1),
         "sell_low_battery_minimum":   round(sell_low_battery_minimum, 1),
         "buy_battery_low_threshold":  round(buy_battery_low_threshold, 1),
