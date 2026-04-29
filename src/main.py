@@ -137,9 +137,14 @@ async def main() -> None:
 
     sched = AsyncIOScheduler(timezone=ZoneInfo(opts.tz))
     for hour in range(opts.run_hourly_from, opts.run_hourly_to + 1):
+        # Pass run_once as a coroutine function with args; AsyncIOScheduler's
+        # AsyncIOExecutor schedules it on the running loop. The previous
+        # `lambda: asyncio.create_task(...)` blew up because the lambda runs in
+        # the executor thread, where there's no running loop.
         sched.add_job(
-            lambda: asyncio.create_task(run_once(opts)),
+            run_once,
             CronTrigger(hour=hour, minute=0),
+            args=[opts],
             name=f"optimise_{hour:02d}00",
             misfire_grace_time=300,
         )
