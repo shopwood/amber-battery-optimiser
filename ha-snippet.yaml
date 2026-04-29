@@ -1,0 +1,33 @@
+# Paste into your Home Assistant configuration.yaml.
+# After saving, "Developer Tools → YAML → Reload" the relevant pieces, or restart HA.
+
+rest_command:
+  refresh_amber_optimiser:
+    url: "http://amber_optimiser_refresh:8080/refresh"
+    method: POST
+    timeout: 30
+
+script:
+  refresh_amber_optimiser:
+    alias: Refresh Amber optimiser
+    icon: mdi:refresh
+    sequence:
+      - service: rest_command.refresh_amber_optimiser
+        response_variable: result
+      - service: persistent_notification.create
+        data:
+          title: "Amber optimiser refresh"
+          message: |
+            status: {{ result.status }}
+            {{ result.content }}
+
+# Then add a Button card to your dashboard:
+#
+#   type: button
+#   name: Refresh Amber optimiser
+#   icon: mdi:refresh
+#   tap_action:
+#     action: call-service
+#     service: script.refresh_amber_optimiser
+#
+# Tap = git pull + restart container (only if there are new commits).
