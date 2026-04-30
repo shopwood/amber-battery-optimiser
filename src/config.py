@@ -44,6 +44,7 @@ class Options:
     # Mid buy: price-scan strategy targeting buy_target_soc_pct
     buy_target_soc_pct: float       # aim to reach this SoC via grid charging (e.g. 85%)
     buy_max_price_cents: float      # never pay more than this (c/kWh) for mid-band buying
+    buy_forecast_adjustment_cents: float  # add to forecast general prices to compensate for P50 under-bias
     # Hard guardrails
     min_sell_soc_pct: float
     max_buy_soc_pct: float
@@ -77,6 +78,7 @@ class Options:
             buy_low_pct=_env("BUY_LOW_PCT", 10, int),
             buy_target_soc_pct=_env("BUY_TARGET_SOC_PCT", 85.0, float),
             buy_max_price_cents=_env("BUY_MAX_PRICE_CENTS", 12.0, float),
+            buy_forecast_adjustment_cents=_env("BUY_FORECAST_ADJUSTMENT_CENTS", 1.0, float),
             min_sell_soc_pct=_env("MIN_SELL_SOC_PCT", 20.0, float),
             max_buy_soc_pct=_env("MAX_BUY_SOC_PCT", 90.0, float),
             sell_price_floor=_env("SELL_PRICE_FLOOR", 0.15, float),

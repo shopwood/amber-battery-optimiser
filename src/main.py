@@ -54,7 +54,17 @@ async def run_once(opts: Options) -> None:
         pv_tomorrow  = await _solcast_kwh(ha, opts.solcast_forecast_tomorrow_entity, only_future=False)
 
         intervals = await amber.rest_of_day(opts.amber_site_id, next_intervals=48)
-        general = [i.per_kwh for i in intervals if i.channel == "general"]
+
+        # Calibration: Amber's P50 forecast tends to under-predict the actual
+        # general (buy) price by ~1 c/kWh. Without correction, the buy-mid
+        # threshold lands a cent below what actually clears the market and the
+        # HA `current_price <= threshold` test never fires. Shift forecasts
+        # only — never the current realised interval (estimate=False).
+        adj = opts.buy_forecast_adjustment_cents / 100.0
+        general = [
+            (i.per_kwh + adj if i.estimate else i.per_kwh)
+            for i in intervals if i.channel == "general"
+        ]
         feed_in = [i.per_kwh for i in intervals if i.channel == "feedIn"]
 
         # Naive load estimate: scales with fraction of day remaining.
@@ -74,10 +84,11 @@ async def run_once(opts: Options) -> None:
         log.info(
             "inputs: soc=%.1f%%  pv_remaining=%.2fkWh  pv_tomorrow=%.2fkWh  "
             "load_remaining=%.2fkWh  today_weight=%.2f  "
-            "buy_target_soc=%.0f%%  buy_max_price=%.0fc  "
+            "buy_target_soc=%.0f%%  buy_max_price=%.0fc  buy_forecast_adj=%.1fc  "
             "general_intervals=%d  feed_in_intervals=%d",
             soc, pv_remaining, pv_tomorrow, load_remaining, today_weight,
             opts.buy_target_soc_pct, opts.buy_max_price_cents,
+            opts.buy_forecast_adjustment_cents,
             len(general), len(feed_in),
         )
 
