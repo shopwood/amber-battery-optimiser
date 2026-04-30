@@ -42,9 +42,15 @@ async def refresh(_request: web.Request) -> web.Response:
     log: list[str] = []
 
     # Refuse if working tree is dirty — never silently lose local edits.
-    rc, out = await _run("git diff --quiet --ignore-submodules HEAD --")
+    # Use -c core.fileMode=false so spurious bit-flips on bind-mounts don't trip us.
+    rc, _ = await _run("git -c core.fileMode=false diff --quiet --ignore-submodules HEAD --")
     if rc != 0:
-        return web.Response(status=409, text="working tree dirty; aborting\n")
+        _, status = await _run("git -c core.fileMode=false status --porcelain")
+        _, stat = await _run("git -c core.fileMode=false diff --stat HEAD")
+        return web.Response(
+            status=409,
+            text=f"working tree dirty; aborting\n--- status ---\n{status}--- diff stat ---\n{stat}",
+        )
 
     # Capture HEAD before/after to decide whether a restart is needed.
     rc, before = await _run("git rev-parse HEAD")
@@ -53,7 +59,10 @@ async def refresh(_request: web.Request) -> web.Response:
     before = before.strip()
     log.append(f"before: {before}")
 
-    rc, out = await _run("git fetch --quiet origin main && git merge --ff-only origin/main")
+    rc, out = await _run(
+        "git -c core.fileMode=false fetch --quiet origin main && "
+        "git -c core.fileMode=false merge --ff-only origin/main"
+    )
     log.append(out.rstrip())
     if rc != 0:
         return web.Response(status=500, text="\n".join(log) + "\n")
