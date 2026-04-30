@@ -6,6 +6,10 @@ RUN apt-get update \
 
 RUN pip install --no-cache-dir aiohttp
 
+# Repo is bind-mounted from the host where it's owned by a non-root user.
+# Git refuses to operate on a repo with "dubious ownership" by default; whitelist /repo.
+RUN git config --system --add safe.directory /repo
+
 WORKDIR /app
 COPY refresh.py .
 
