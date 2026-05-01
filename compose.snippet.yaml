@@ -17,7 +17,8 @@
     # networks: [default]
 
   amber_optimiser_refresh:
-    # Tiny webhook: HA POSTs to it → it git-pulls and restarts the optimiser.
+    # Tiny webhook: HA POSTs to it → it git-pulls and rebuilds + recreates the
+    # optimiser container via `docker compose up -d --build`.
     # Internal docker network only — no host port, no auth.
     build: ./amber-battery-optimiser/refresh
     container_name: amber_optimiser_refresh
@@ -25,8 +26,16 @@
     environment:
       - REPO_DIR=/repo
       - TARGET_CONTAINER=amber_battery_optimiser
+      - TARGET_SERVICE=amber_battery_optimiser
+      # Path inside the container — must equal the host path (see volume mount).
+      - COMPOSE_FILE=/home/scott/home-assistant/compose.yaml
     volumes:
       # Mount the optimiser repo so the service can `git pull` it.
       - ./amber-battery-optimiser:/repo
-      # Read/write to the docker socket so it can restart the optimiser container.
+      # Mount the entire home-assistant dir at the SAME path inside the container.
+      # The docker daemon runs on the host, so when compose tells it to build
+      # `./amber-battery-optimiser`, the daemon needs that path to exist on the
+      # host — which it does, because the in-container path matches.
+      - /home/scott/home-assistant:/home/scott/home-assistant
+      # Read/write to the docker socket so it can drive the daemon.
       - /var/run/docker.sock:/var/run/docker.sock
