@@ -16,6 +16,7 @@ import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -133,6 +134,29 @@ async def run_once(opts: Options) -> None:
                 log.warning("failed to write %s = %s: %s", entity, value, e)
 
 
+async def _run_once_with_retry(
+    opts: Options, *, max_attempts: int = 6, delay_secs: float = 10.0,
+) -> None:
+    """Run once, retrying on transient connection failures.
+
+    The optimiser typically boots alongside HA via docker compose; HA may
+    still be coming up when our first request fires. Retry only on connect
+    failures — anything else is logged and re-raised.
+    """
+    for attempt in range(1, max_attempts + 1):
+        try:
+            await run_once(opts)
+            return
+        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+            if attempt >= max_attempts:
+                raise
+            log.warning(
+                "connect failed on attempt %d/%d (%s); retrying in %.0fs",
+                attempt, max_attempts, e, delay_secs,
+            )
+            await asyncio.sleep(delay_secs)
+
+
 async def main() -> None:
     opts = Options.load()
     log.info(
@@ -140,9 +164,10 @@ async def main() -> None:
         opts.run_hourly_from, opts.run_hourly_to, opts.tz, opts.dry_run, opts.amber_site_id,
     )
 
-    # Run once on boot so the helpers aren't stale after a restart.
+    # Run once on boot so the helpers aren't stale after a restart. HA may
+    # still be coming up if we restarted together — retry the first call.
     try:
-        await run_once(opts)
+        await _run_once_with_retry(opts)
     except Exception:
         log.exception("initial run failed")
 
