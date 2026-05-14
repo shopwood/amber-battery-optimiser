@@ -28,7 +28,6 @@ class Options:
     general_price_entity: str
     feed_in_price_entity: str
     solcast_forecast_entity: str
-    solcast_forecast_tomorrow_entity: str
     # Physical battery
     battery_capacity_kwh: float
     battery_soc_floor_pct: float
@@ -36,9 +35,7 @@ class Options:
     battery_charge_rate_kw: float   # max charge rate used for buy-quantity estimates
     # Load estimate
     daily_load_kwh: float
-    # Sell percentile bands
-    sell_high_pct: int
-    sell_low_pct: int
+    # Sell spike override
     sell_spike_price_cents: float     # c/kWh — override SoC minimum and sell at floor when above this
     # Emergency buy percentile (when battery is critically low)
     buy_low_pct: int
@@ -74,8 +71,6 @@ class Options:
             battery_soc_ceiling_pct=_env("BATTERY_SOC_CEILING_PCT", 100.0, float),
             battery_charge_rate_kw=_env("BATTERY_CHARGE_RATE_KW", 5.0, float),
             daily_load_kwh=_env("DAILY_LOAD_KWH", 20.0, float),
-            sell_high_pct=_env("SELL_HIGH_PCT", 90, int),
-            sell_low_pct=_env("SELL_LOW_PCT", 70, int),
             sell_spike_price_cents=_env("SELL_SPIKE_PRICE_CENTS", 30.0, float),
             buy_low_pct=_env("BUY_LOW_PCT", 10, int),
             buy_target_soc_pct=_env("BUY_TARGET_SOC_PCT", 85.0, float),
@@ -93,12 +88,10 @@ class Options:
 # Input_number helper IDs written by the optimiser.
 HELPERS = {
     "sell_price_threshold":       "input_number.sell_price_threshold",
-    "sell_battery_minimum":       "input_number.sell_battery_minimum",
-    "sell_price_low_threshold":   "input_number.sell_price_low_threshold",
-    "sell_low_battery_minimum":   "input_number.sell_low_battery_minimum",
     "sell_spike_price_threshold": "input_number.sell_spike_price_threshold",
+    "sell_battery_minimum":       "input_number.sell_battery_minimum",
     "buy_price_low_battery":      "input_number.buy_price_low_battery",
-    "buy_battery_low_threshold":  "input_number.buy_battery_low_threshold",
     "buy_price_mid_battery":      "input_number.buy_price_mid_battery",
+    "buy_battery_low_threshold":  "input_number.buy_battery_low_threshold",
     "buy_battery_high_threshold": "input_number.buy_battery_high_threshold",
 }

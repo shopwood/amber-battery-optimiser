@@ -73,21 +73,15 @@ async def run_once(opts: Options) -> None:
         fraction_of_day_remaining = max(0.0, (24 - (now.hour + now.minute / 60)) / 24)
         load_remaining = opts.daily_load_kwh * fraction_of_day_remaining
 
-        # Time-weighted blend of today vs tomorrow PV.
-        # Daylight window treated as ~06:00–18:00 (12h). Weight is 1.0 at dawn,
-        # trails to 0.0 at dusk, so overnight decisions lean on tomorrow's forecast.
-        mins_daylight_left = max(0, min(18 * 60 - (now.hour * 60 + now.minute), 12 * 60))
-        today_weight = mins_daylight_left / (12 * 60)
-
         # buy_max_price: convert from c/kWh (config) to $/kWh (optimiser's unit).
         buy_max_price = opts.buy_max_price_cents / 100.0
 
         log.info(
             "inputs: soc=%.1f%%  pv_remaining=%.2fkWh  pv_tomorrow=%.2fkWh  "
-            "load_remaining=%.2fkWh  today_weight=%.2f  "
+            "load_remaining=%.2fkWh  "
             "buy_target_soc=%.0f%%  buy_max_price=%.0fc  buy_forecast_adj=%.1fc  "
             "general_intervals=%d  feed_in_intervals=%d",
-            soc, pv_remaining, pv_tomorrow, load_remaining, today_weight,
+            soc, pv_remaining, pv_tomorrow, load_remaining,
             opts.buy_target_soc_pct, opts.buy_max_price_cents,
             opts.buy_forecast_adjustment_cents,
             len(general), len(feed_in),
@@ -103,8 +97,8 @@ async def run_once(opts: Options) -> None:
             soc_ceiling_pct=opts.battery_soc_ceiling_pct,
             pv_remaining_kwh=pv_remaining,
             load_remaining_kwh=load_remaining,
-            sell_high_pct=opts.sell_high_pct,
-            sell_low_pct=opts.sell_low_pct,
+            pv_tomorrow_kwh=pv_tomorrow,
+            load_tomorrow_kwh=opts.daily_load_kwh,
             sell_spike_price=opts.sell_spike_price_cents / 100.0,
             buy_low_pct=opts.buy_low_pct,
             buy_target_soc_pct=opts.buy_target_soc_pct,
@@ -112,9 +106,6 @@ async def run_once(opts: Options) -> None:
             min_sell_soc_pct=opts.min_sell_soc_pct,
             max_buy_soc_pct=opts.max_buy_soc_pct,
             sell_price_floor=opts.sell_price_floor,
-            pv_tomorrow_kwh=pv_tomorrow,
-            load_tomorrow_kwh=opts.daily_load_kwh,
-            today_weight=today_weight,
         ))
 
         log.info("computed: %s", values)
