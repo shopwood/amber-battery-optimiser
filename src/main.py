@@ -105,6 +105,7 @@ async def run_once(opts: Options) -> None:
             load_remaining_kwh=load_remaining,
             sell_high_pct=opts.sell_high_pct,
             sell_low_pct=opts.sell_low_pct,
+            sell_spike_price=opts.sell_spike_price_cents / 100.0,
             buy_low_pct=opts.buy_low_pct,
             buy_target_soc_pct=opts.buy_target_soc_pct,
             buy_max_price=buy_max_price,

@@ -39,6 +39,7 @@ class Options:
     # Sell percentile bands
     sell_high_pct: int
     sell_low_pct: int
+    sell_spike_price_cents: float     # c/kWh — override SoC minimum and sell at floor when above this
     # Emergency buy percentile (when battery is critically low)
     buy_low_pct: int
     # Mid buy: price-scan strategy targeting buy_target_soc_pct
@@ -75,6 +76,7 @@ class Options:
             daily_load_kwh=_env("DAILY_LOAD_KWH", 20.0, float),
             sell_high_pct=_env("SELL_HIGH_PCT", 90, int),
             sell_low_pct=_env("SELL_LOW_PCT", 70, int),
+            sell_spike_price_cents=_env("SELL_SPIKE_PRICE_CENTS", 30.0, float),
             buy_low_pct=_env("BUY_LOW_PCT", 10, int),
             buy_target_soc_pct=_env("BUY_TARGET_SOC_PCT", 85.0, float),
             buy_max_price_cents=_env("BUY_MAX_PRICE_CENTS", 12.0, float),
@@ -94,6 +96,7 @@ HELPERS = {
     "sell_battery_minimum":       "input_number.sell_battery_minimum",
     "sell_price_low_threshold":   "input_number.sell_price_low_threshold",
     "sell_low_battery_minimum":   "input_number.sell_low_battery_minimum",
+    "sell_spike_price_threshold": "input_number.sell_spike_price_threshold",
     "buy_price_low_battery":      "input_number.buy_price_low_battery",
     "buy_battery_low_threshold":  "input_number.buy_battery_low_threshold",
     "buy_price_mid_battery":      "input_number.buy_price_mid_battery",

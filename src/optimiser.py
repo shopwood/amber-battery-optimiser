@@ -102,6 +102,7 @@ class OptimiserInputs:
     load_remaining_kwh: float
     sell_high_pct: int
     sell_low_pct: int
+    sell_spike_price: float          # $/kWh — sell at floor SoC when above this price
     buy_low_pct: int
     buy_target_soc_pct: float       # target SoC for mid-band grid charging
     buy_max_price: float            # $/kWh ceiling for mid-band buying
@@ -127,6 +128,10 @@ def compute(inp: OptimiserInputs) -> dict[str, float]:
     sell_low  = max(sell_low,  inp.sell_price_floor)
     if sell_high <= sell_low:
         sell_high = sell_low + 0.01
+
+    # --- spike sell: absolute price floor override (ignores SoC minimum) ------
+    # Must be strictly above sell_high so normal and spike conditions don't overlap.
+    sell_spike = max(inp.sell_spike_price, sell_high + 0.01)
 
     # --- emergency buy price (percentile-based, for critically-low battery) --
     buy_low = _percentile(inp.general_prices, inp.buy_low_pct)
@@ -175,6 +180,7 @@ def compute(inp: OptimiserInputs) -> dict[str, float]:
     return {
         "sell_price_threshold":       round(sell_high, 5),
         "sell_price_low_threshold":   round(sell_low, 5),
+        "sell_spike_price_threshold": round(sell_spike, 5),
         "buy_price_low_battery":      round(buy_low, 5),
         "buy_price_mid_battery":      round(buy_mid, 5),
         "sell_battery_minimum":       round(sell_battery_minimum, 1),
