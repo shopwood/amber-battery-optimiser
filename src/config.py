@@ -28,6 +28,7 @@ class Options:
     general_price_entity: str
     feed_in_price_entity: str
     solcast_forecast_entity: str
+    solcast_forecast_tomorrow_entity: str
     # Physical battery
     battery_capacity_kwh: float
     battery_soc_floor_pct: float
@@ -86,10 +87,9 @@ class Options:
 
 
 # Input_number helper IDs written by the optimiser.
+# Buy-side only — sell helpers (sell_price_threshold, sell_spike_price_threshold,
+# sell_battery_minimum) are now set manually in HA and no longer written here.
 HELPERS = {
-    "sell_price_threshold":       "input_number.sell_price_threshold",
-    "sell_spike_price_threshold": "input_number.sell_spike_price_threshold",
-    "sell_battery_minimum":       "input_number.sell_battery_minimum",
     "buy_price_low_battery":      "input_number.buy_price_low_battery",
     "buy_price_mid_battery":      "input_number.buy_price_mid_battery",
     "buy_battery_low_threshold":  "input_number.buy_battery_low_threshold",
