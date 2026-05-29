@@ -22,7 +22,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from amber import Amber
 from config import HELPERS, Options
-from ha import HomeAssistant
+from ha import HomeAssistant, StateNotReady
 from optimiser import OptimiserInputs, compute
 
 log = logging.getLogger("optimiser")
@@ -127,24 +127,27 @@ async def run_once(opts: Options) -> None:
 
 
 async def _run_once_with_retry(
-    opts: Options, *, max_attempts: int = 6, delay_secs: float = 10.0,
+    opts: Options, *, max_attempts: int = 12, delay_secs: float = 10.0,
 ) -> None:
-    """Run once, retrying on transient connection failures.
+    """Run once, retrying on transient boot-time failures.
 
     The optimiser typically boots alongside HA via docker compose; HA may
-    still be coming up when our first request fires. Retry only on connect
-    failures — anything else is logged and re-raised.
+    still be coming up when our first request fires (ConnectError), or HA
+    is up but a specific integration (Sun Home, Solcast, Amber) hasn't yet
+    populated its entity state — it reads back as 'unknown' / 'unavailable'
+    and surfaces as StateNotReady. Both are warmup conditions; retry. Any
+    other exception is logged and re-raised.
     """
     for attempt in range(1, max_attempts + 1):
         try:
             await run_once(opts)
             return
-        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+        except (httpx.ConnectError, httpx.ConnectTimeout, StateNotReady) as e:
             if attempt >= max_attempts:
                 raise
             log.warning(
-                "connect failed on attempt %d/%d (%s); retrying in %.0fs",
-                attempt, max_attempts, e, delay_secs,
+                "not ready on attempt %d/%d (%s: %s); retrying in %.0fs",
+                attempt, max_attempts, type(e).__name__, e, delay_secs,
             )
             await asyncio.sleep(delay_secs)
 

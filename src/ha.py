@@ -12,6 +12,20 @@ from typing import Any
 import httpx
 
 
+# HA's sentinel state strings for entities whose integrations haven't yet
+# pushed a real value. Common at boot before all integrations have warmed up.
+_NOT_READY_STATES = {"unknown", "unavailable", "none", ""}
+
+
+class StateNotReady(RuntimeError):
+    """Entity exists but its state hasn't been populated yet.
+
+    Raised by get_state_float when the state is one of HA's sentinel strings
+    (unknown/unavailable/none) or otherwise can't be parsed as a float. The
+    boot-time retry loop in main treats this the same as a connect failure.
+    """
+
+
 class HomeAssistant:
     def __init__(self, url: str, token: str, client: httpx.AsyncClient | None = None):
         if not token:
@@ -40,7 +54,13 @@ class HomeAssistant:
 
     async def get_state_float(self, entity_id: str) -> float:
         s = await self.get_state(entity_id)
-        return float(s["state"])
+        state = s.get("state")
+        if isinstance(state, str) and state.strip().lower() in _NOT_READY_STATES:
+            raise StateNotReady(f"{entity_id} state is {state!r}")
+        try:
+            return float(state)
+        except (TypeError, ValueError) as e:
+            raise StateNotReady(f"{entity_id} state {state!r} is not numeric") from e
 
     async def get_attr(self, entity_id: str, attr: str) -> Any:
         s = await self.get_state(entity_id)
