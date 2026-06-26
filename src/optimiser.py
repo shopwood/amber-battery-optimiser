@@ -11,16 +11,27 @@ Inputs:
 Output:
     Dict of the 4 buy-side input_number values to write back to HA.
 
-Buy-mid strategy (price-scan):
-    Target: battery peaks at buy_target_soc_pct (default 85%).
-    1. Estimate kWh still needed from the grid:
-         needed = target_kwh - current_kwh - max(0, pv_remaining - load_remaining)
-    2. Scan unique general prices low → high (up to buy_max_price $/kWh).
-       At each candidate price P, the battery would charge during every interval
-       where price ≤ P:
-         potential = count(intervals ≤ P) × charge_rate_kw × 0.5h
+Buy-mid strategy (price-scan with dynamic survival target):
+
+    Target is computed dynamically, max of:
+      - Static baseline: buy_target_soc_pct × capacity   (e.g. 85%, summer-friendly)
+      - Survival reserve: floor + today's net deficit + tomorrow's net deficit
+        where deficit_X = max(0, load_X - pv_X)
+    …capped at max_buy_soc_pct × capacity.
+
+    In summer (PV ≥ load) the deficits are zero and the static baseline dominates
+    — behaviour unchanged. In winter (PV < load) the survival reserve exceeds the
+    baseline and pushes the target up toward the max_buy cap, ensuring the battery
+    is full enough at end of day to cover the overnight + next-day gap without
+    falling to the floor.
+
+    Scan procedure:
+    1. needed = max(0, target_kwh - current_kwh - max(0, pv_remaining - load_remaining))
+    2. Scan unique general prices low → high (up to buy_max_price).
+       At each candidate price P, count intervals where price ≤ P:
+         potential = count × charge_rate_kw × 0.5h
     3. First P where potential ≥ needed becomes buy_price_mid_battery.
-       If needed ≤ 0, no mid-band buying is required (price set to sentinel).
+       If needed ≤ 0, no mid-band buying required (price set to sentinel).
 
 Emergency buy (percentile-based):
     buy_price_low_battery = P(buy_low_pct) of general prices
@@ -50,6 +61,39 @@ def _clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
 
+def _compute_target_kwh(
+    buy_target_soc_pct: float,     # static baseline target (%)
+    max_buy_soc_pct: float,        # hard cap on dynamic target (%)
+    soc_floor_pct: float,
+    battery_capacity_kwh: float,
+    load_remaining_kwh: float,
+    load_tomorrow_kwh: float,
+    pv_remaining_kwh: float,
+    pv_tomorrow_kwh: float,
+) -> float:
+    """Dynamic target kWh for grid charging.
+
+    Returns max(static target, survival reserve), capped at max_buy_soc_pct.
+
+    Survival reserve = floor + today's net load deficit + tomorrow's net load
+    deficit, where deficit_X = max(0, load_X - pv_X). In summer (PV surplus)
+    deficits are 0 and the static baseline dominates — same behaviour as
+    before. In winter (PV < load) the survival reserve exceeds the baseline
+    and the optimiser plans to charge the battery higher than its baseline,
+    up to the max_buy cap. Push max_buy_soc_pct toward the SoC ceiling
+    (e.g. 95) to allow full winter top-up.
+    """
+    static = buy_target_soc_pct / 100.0 * battery_capacity_kwh
+    floor  = soc_floor_pct      / 100.0 * battery_capacity_kwh
+    cap    = max_buy_soc_pct    / 100.0 * battery_capacity_kwh
+
+    today_deficit    = max(0.0, load_remaining_kwh - pv_remaining_kwh)
+    tomorrow_deficit = max(0.0, load_tomorrow_kwh  - pv_tomorrow_kwh)
+    survival = floor + today_deficit + tomorrow_deficit
+
+    return min(cap, max(static, survival))
+
+
 def _scan_buy_mid_price(
     general_prices: list[float],
     current_soc_pct: float,
@@ -57,12 +101,11 @@ def _scan_buy_mid_price(
     load_remaining_kwh: float,
     battery_capacity_kwh: float,
     battery_charge_rate_kw: float,
-    buy_target_soc_pct: float,
+    target_kwh: float,              # kWh target (precomputed by _compute_target_kwh)
     buy_max_price: float,           # $/kWh ceiling
 ) -> float:
     """Return the lowest buy price that, if set as the mid-band limit, would
-    purchase enough grid energy to bring the battery to buy_target_soc_pct."""
-    target_kwh  = buy_target_soc_pct / 100.0 * battery_capacity_kwh
+    purchase enough grid energy to bring the battery to target_kwh."""
     current_kwh = current_soc_pct   / 100.0 * battery_capacity_kwh
     solar_net   = max(0.0, pv_remaining_kwh - load_remaining_kwh)
     needed_kwh  = max(0.0, target_kwh - current_kwh - solar_net)
@@ -118,6 +161,18 @@ def compute(inp: OptimiserInputs) -> dict[str, float]:
     # --- emergency buy price (percentile-based, for critically-low battery) --
     buy_low = _percentile(inp.general_prices, inp.buy_low_pct)
 
+    # --- dynamic target: static baseline OR survival reserve, whichever's higher.
+    target_kwh = _compute_target_kwh(
+        buy_target_soc_pct=inp.buy_target_soc_pct,
+        max_buy_soc_pct=inp.max_buy_soc_pct,
+        soc_floor_pct=inp.soc_floor_pct,
+        battery_capacity_kwh=inp.battery_capacity_kwh,
+        load_remaining_kwh=inp.load_remaining_kwh,
+        load_tomorrow_kwh=inp.load_tomorrow_kwh,
+        pv_remaining_kwh=inp.pv_remaining_kwh,
+        pv_tomorrow_kwh=inp.pv_tomorrow_kwh,
+    )
+
     # --- mid buy price (price-scan: cheapest price that covers our deficit) --
     buy_mid = _scan_buy_mid_price(
         general_prices=inp.general_prices,
@@ -126,7 +181,7 @@ def compute(inp: OptimiserInputs) -> dict[str, float]:
         load_remaining_kwh=inp.load_remaining_kwh,
         battery_capacity_kwh=inp.battery_capacity_kwh,
         battery_charge_rate_kw=inp.battery_charge_rate_kw,
-        buy_target_soc_pct=inp.buy_target_soc_pct,
+        target_kwh=target_kwh,
         buy_max_price=inp.buy_max_price,
     )
 
@@ -138,9 +193,11 @@ def compute(inp: OptimiserInputs) -> dict[str, float]:
     # Emergency charge band — only when battery is very low.
     buy_battery_low_threshold = _clamp(inp.soc_floor_pct + 10.0, 5.0, 40.0)
 
-    # Mid-band charge ceiling — the SoC we're targeting.
+    # Mid-band charge ceiling — reflects the dynamic target (the SoC at which
+    # the HA automation stops grid-charging in the mid band).
+    dynamic_target_pct = (target_kwh / max(inp.battery_capacity_kwh, 0.1)) * 100.0
     buy_battery_high_threshold = _clamp(
-        inp.buy_target_soc_pct,
+        dynamic_target_pct,
         buy_battery_low_threshold + 10.0, inp.max_buy_soc_pct,
     )
 
