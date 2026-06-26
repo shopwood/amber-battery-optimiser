@@ -1,10 +1,15 @@
 """
-Tiny webhook: POST /refresh → git pull (ff-only) and rebuild + restart the
-optimiser container, only if there were new commits to pull.
+Tiny webhook: POST /refresh → git pull (ff-only) and rebuild + force-recreate
+the optimiser container.
+
+The container is always recreated, even when git pulled no new commits, so
+that .env-only edits (which don't change the image hash) are picked up too.
 
 `docker restart` alone doesn't pick up source changes — it just restarts the
-existing image. We invoke `docker compose up -d --build <service>` which
-rebuilds the image and recreates the container.
+existing image. `docker compose up -d --build` rebuilds the image but only
+recreates the container if the image hash changed. So we use
+`--build --force-recreate`: rebuild the image, then always replace the
+container, which reloads env_file values from disk.
 
 For compose to find paths the way the host's daemon expects, the host's
 home-assistant directory must be bind-mounted into this container at the
@@ -42,10 +47,15 @@ async def _run(cmd: str) -> tuple[int, str]:
 
 
 async def _compose_up_build(service: str) -> tuple[int, str]:
-    """Rebuild image and recreate container via docker compose."""
+    """Rebuild image and force-recreate container via docker compose.
+
+    --force-recreate replaces the container even when the image hash didn't
+    change, which is what makes .env-only edits land — the new container
+    re-reads env_file at startup.
+    """
     # cwd doesn't matter — -f gives compose the absolute file path.
     proc = await asyncio.create_subprocess_shell(
-        f"docker compose -f {COMPOSE_FILE} up -d --build {service}",
+        f"docker compose -f {COMPOSE_FILE} up -d --build --force-recreate {service}",
         cwd="/",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
@@ -88,16 +98,18 @@ async def refresh(_request: web.Request) -> web.Response:
     log.append(f"after:  {after}")
 
     if before == after:
-        log.append("no new commits; container not restarted.")
-        return web.Response(status=200, text="\n".join(log) + "\n")
+        log.append("no new commits — recreating anyway to pick up .env changes")
+    else:
+        rc, out = await _run(f"git --no-pager log --oneline {before}..{after}")
+        log.append(out.rstrip())
 
-    rc, out = await _run(f"git --no-pager log --oneline {before}..{after}")
-    log.append(out.rstrip())
-
+    # Always rebuild + force-recreate, even when no commits arrived. .env-only
+    # edits don't change the image hash, so without --force-recreate compose
+    # would leave the existing container running and the new values wouldn't load.
     rc, build_out = await _compose_up_build(TARGET_SERVICE)
     # Compose chats a lot — keep just the tail lines so the HA notification stays readable.
     tail = "\n".join(build_out.rstrip().splitlines()[-15:])
-    log.append(f"compose up --build (rc={rc}):\n{tail}")
+    log.append(f"compose up --build --force-recreate (rc={rc}):\n{tail}")
     if rc != 0:
         return web.Response(status=500, text="\n".join(log) + "\n")
 
