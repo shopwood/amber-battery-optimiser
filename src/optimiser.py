@@ -27,11 +27,18 @@ Buy-mid strategy (price-scan with dynamic survival target):
 
     Scan procedure:
     1. needed = max(0, target_kwh - current_kwh - max(0, pv_remaining - load_remaining))
-    2. Scan unique general prices low → high (up to buy_max_price).
-       At each candidate price P, count intervals where price ≤ P:
+    2. Bound the planning horizon at the next price spike (any interval ≥
+       2× the rest-of-day median). We can't defer charging across a peak —
+       the battery has to ride it out from whatever SoC it has when it hits.
+       Without this bound the scan would pick the cheapest post-peak intervals
+       and leave the battery underfilled going in.
+    3. Scan unique pre-spike prices low → high (up to buy_max_price).
+       At each candidate price P, count pre-spike intervals where price ≤ P:
          potential = count × charge_rate_kw × 0.5h
-    3. First P where potential ≥ needed becomes buy_price_mid_battery.
-       If needed ≤ 0, no mid-band buying required (price set to sentinel).
+    4. First P where potential ≥ needed becomes buy_price_mid_battery.
+       If pre-spike capacity can't cover the deficit, threshold = buy_max_price
+       (buy at every qualifying pre-spike interval). If the current interval
+       IS the spike, no mid-band buying — emergency band still applies.
 
 Emergency buy (percentile-based):
     buy_price_low_battery = P(buy_low_pct) of general prices
@@ -59,6 +66,34 @@ def _percentile(values: list[float], pct: float) -> float:
 
 def _clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
+
+
+# Spike detection: any interval whose price is at least this multiple of the
+# rest-of-day median is treated as a peak we shouldn't try to charge across.
+# 2.0 catches Australia's typical evening peak (e.g. 60c+ on a 22c median day)
+# without flagging normal shoulder hours.
+_SPIKE_FACTOR = 2.0
+
+
+def _next_spike_index(prices: list[float]) -> int | None:
+    """Index of the first chronological interval that's a 'spike' relative to
+    the rest-of-day distribution. Returns None if no interval qualifies.
+
+    Used to bound the buy-scan horizon: don't plan grid charging across a peak,
+    because the battery will be drained / opportunity-cost-burned during it.
+    The cheapest intervals on a typical Amber day cluster overnight, AFTER the
+    evening peak — without this check the scan picks them and leaves the
+    battery low going INTO the peak.
+    """
+    if not prices:
+        return None
+    sorted_p = sorted(prices)
+    median = sorted_p[len(sorted_p) // 2]
+    threshold = median * _SPIKE_FACTOR
+    for i, p in enumerate(prices):
+        if p >= threshold:
+            return i
+    return None
 
 
 def _compute_target_kwh(
@@ -116,22 +151,38 @@ def _scan_buy_mid_price(
         # some automations might treat as "unconstrained".
         return -9.99
 
+    # Constrain the scan to intervals BEFORE the next price spike. We can't
+    # defer charging across a peak — the battery has to ride out the spike from
+    # whatever charge it has when the spike hits. If the cheapest intervals are
+    # post-peak (e.g. overnight after a 3–9pm peak), the scan would otherwise
+    # set a threshold so low that nothing fires before the peak, leaving the
+    # battery underfilled going in.
+    spike_idx = _next_spike_index(general_prices)
+    horizon = general_prices[:spike_idx] if spike_idx is not None else general_prices
+
+    if not horizon:
+        # Current interval is itself the spike — no pre-spike buying possible.
+        # Emergency-band buy (separate threshold) still applies if SoC is low.
+        return -9.99
+
     energy_per_interval = battery_charge_rate_kw * 0.5  # kWh per 30-min slot
 
-    # Unique candidate thresholds from the actual price list, capped at max.
-    candidates = sorted({p for p in general_prices if p <= buy_max_price})
+    # Unique candidate thresholds from the pre-spike list, capped at max.
+    candidates = sorted({p for p in horizon if p <= buy_max_price})
 
     for price in candidates:
-        count     = sum(1 for p in general_prices if p <= price)
+        count     = sum(1 for p in horizon if p <= price)
         potential = count * energy_per_interval
         if potential >= needed_kwh:
             return price
 
-    # Even buying at every sub-max interval isn't enough — accept buy_max_price.
+    # Pre-spike capacity can't cover the deficit — accept buy_max_price so the
+    # automation buys at every qualifying pre-spike interval (best we can do
+    # before the peak forces us to ride it out from current SoC).
     if candidates:
         return buy_max_price
 
-    return -9.99  # no forecast prices below the ceiling — don't buy mid-band
+    return -9.99  # no pre-spike prices below the ceiling — don't buy mid-band
 
 
 @dataclass(frozen=True)
