@@ -143,7 +143,10 @@ def compute(inp: OptimiserInputs) -> dict[str, float]:
         buy_max_price=inp.buy_max_price,
     )
 
-    if buy_mid <= buy_low:
+    # Ordering guardrail: only applies when buy_mid is a real price.
+    # If it's the "don't buy" sentinel (-9.99) leave it alone — nudging it up
+    # to buy_low + 0.01 would turn "no mid-band buying" into a real buy price.
+    if buy_mid >= 0.0 and buy_mid <= buy_low:
         buy_mid = buy_low + 0.01
 
     # --- SoC reserves (scale with PV surplus over the relevant horizon) -----
